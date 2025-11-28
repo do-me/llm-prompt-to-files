@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Code Extractor</title>
+    <!-- JSZip for creating the archive -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <!-- FileSaver for triggering the download -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <style>
+        :root {
+            --bg-color: #1e1e2e;
+            --text-color: #cdd6f4;
+            --accent-color: #89b4fa;
+            --secondary-bg: #313244;
+            --success: #a6e3a1;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+        }
+
+        h1 {
+            color: var(--accent-color);
+            margin-bottom: 0.5rem;
+        }
+
+        p.desc {
+            opacity: 0.7;
+            margin-bottom: 2rem;
+        }
+
+        textarea {
+            width: 100%;
+            height: 400px;
+            background-color: var(--secondary-bg);
+            color: var(--text-color);
+            border: 2px solid #45475a;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 14px;
+            resize: vertical;
+            box-sizing: border-box;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: var(--accent-color);
+        }
+
+        .controls {
+            margin-top: 1rem;
+            display: flex;
+            justify-content: flex-end;
+            gap: 1rem;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: #11111b;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            font-weight: bold;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+
+        button:hover {
+            opacity: 0.9;
+        }
+
+        #status {
+            margin-top: 1rem;
+            padding: 1rem;
+            border-radius: 6px;
+            background-color: var(--secondary-bg);
+            display: none;
+        }
+        
+        .file-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .file-list li {
+            padding: 0.25rem 0;
+            border-bottom: 1px solid #45475a;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .empty-file-note {
+            font-size: 0.8em;
+            color: #fab387;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>GEMINI TO ZIP</h1>
+    <p class="desc">Paste the full markdown response from the LLM below. This tool will parse filenames, extract code blocks, and download a ZIP file with the correct folder structure.</p>
+
+    <textarea id="input" placeholder="Paste Markdown content here..."></textarea>
+
+    <div class="controls">
+        <button onclick="processFiles()">Parse & Download ZIP</button>
+    </div>
+
+    <div id="status"></div>
+</div>
+
+<script>
+    async function processFiles() {
+        const input = document.getElementById('input').value;
+        const statusDiv = document.getElementById('status');
+        const zip = new JSZip();
+        
+        statusDiv.style.display = 'block';
+        statusDiv.innerHTML = 'Parsing...';
+
+        const extractedFiles = extractFilesFromMarkdown(input);
+
+        if (extractedFiles.length === 0) {
+            statusDiv.innerHTML = '<span style="color:#f38ba8">No files found! Make sure filenames are mentioned before code blocks.</span>';
+            return;
+        }
+
+        // Add files to zip
+        extractedFiles.forEach(file => {
+            zip.file(file.path, file.content);
+        });
+
+        // Generate and download
+        try {
+            const content = await zip.generateAsync({type: "blob"});
+            saveAs(content, "project_files.zip");
+            
+            // Show success summary
+            let html = `<h3 style="color:var(--success)">Success! Downloaded ${extractedFiles.length} files:</h3><ul class="file-list">`;
+            extractedFiles.forEach(f => {
+                html += `<li><span>${f.path}</span> <span style="opacity:0.5">${f.size} chars</span></li>`;
+            });
+            html += '</ul>';
+            statusDiv.innerHTML = html;
+        } catch (e) {
+            statusDiv.innerHTML = `<span style="color:#f38ba8">Error creating zip: ${e.message}</span>`;
+        }
+    }
+
+    function extractFilesFromMarkdown(markdown) {
+        const files = [];
+        
+        // Split markdown by lines to process sequentially
+        const lines = markdown.split('\n');
+        
+        // Regex to detect code block start
+        const codeBlockStartRegex = /^```/;
+        
+        // Regex to try and find a filename in a text line
+        // Looks for patterns like: "filename.ext", "path/to/file.py", "`path/to/file.py`"
+        // It specifically excludes common words that look like extensions but aren't contextually files usually.
+        const filenameRegex = /[`*_]?([a-zA-Z0-9_\-\/]+\.[a-zA-Z0-9]+)[`*_]?/;
+
+        let capturing = false;
+        let currentContent = [];
+        let currentFilename = null;
+        
+        // Strategy: Iterate lines. 
+        // 1. Look for filenames in normal text lines. Keep the "most recent found filename".
+        // 2. When a code block starts, lock in that filename.
+        // 3. Capture until code block ends.
+        
+        let lastFoundFilename = null;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+
+            if (capturing) {
+                if (codeBlockStartRegex.test(line)) {
+                    // End of block
+                    files.push({
+                        path: currentFilename,
+                        content: currentContent.join('\n'),
+                        size: currentContent.join('\n').length
+                    });
+                    capturing = false;
+                    currentContent = [];
+                    currentFilename = null;
+                    lastFoundFilename = null; // Reset to avoid reusing the same name
+                } else {
+                    currentContent.push(line);
+                }
+            } else {
+                // Check if this line starts a code block
+                if (codeBlockStartRegex.test(line)) {
+                    if (lastFoundFilename) {
+                        capturing = true;
+                        currentFilename = lastFoundFilename;
+                    } else {
+                        console.warn("Found code block but no filename associated:", line);
+                    }
+                } else {
+                    // We are in normal text. Try to find a filename.
+                    // We look for specific cues often used by LLMs like "### 1. `filename.py`"
+                    const match = line.match(filenameRegex);
+                    if (match) {
+                        // specialized cleanup for common LLM artifacts
+                        let cleanName = match[1].trim();
+                        
+                        // Ignore if it looks like a version number or just a dot
+                        if (cleanName.length > 2 && cleanName.includes('.')) {
+                             lastFoundFilename = cleanName;
+                        }
+                    }
+                }
+            }
+        }
+
+        // SECOND PASS: Look for "Empty files" lists
+        // User pattern: "1. `geocoder/__init__.py`" inside a list, usually at the end
+        // This is a heuristic for the specific example provided
+        const listRegex = /^\d+\.\s+[`']?([a-zA-Z0-9_\-\/]+\/__init__\.py)[`']?/gm;
+        let listMatch;
+        while ((listMatch = listRegex.exec(markdown)) !== null) {
+            const path = listMatch[1];
+            // Only add if we didn't already find it as a code block
+            if (!files.find(f => f.path === path)) {
+                files.push({
+                    path: path,
+                    content: "", // Empty file
+                    size: 0
+                });
+            }
+        }
+
+        return files;
+    }
+</script>
+
+</body>
+</html>
