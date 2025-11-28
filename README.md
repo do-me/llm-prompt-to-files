@@ -1,10 +1,13 @@
-# LLM Code Extractor
+# LLM Prompt To Files
 
 A simple, browser-based tool to parse Markdown responses from LLMs (Gemini, ChatGPT, Claude) and download the generated code as a ZIP file with the correct directory structure.
 
 ## How to Use
 
-- Just open the GitHub page in your browser: 
+- Just open the GitHub page in your browser, paste the code and download the zip file: 
+
+<img width="1395" height="1141" alt="image" src="https://github.com/user-attachments/assets/c1ec30bc-f51c-4928-beaf-1e3fbf2f5816" />
+
 
 ## Features
 
